@@ -14,7 +14,7 @@
 2. Normalize_Clipped (上下1%のパーセンタイルでクリップした正規化)
 
 実行方法:
-    python3 process_16to8_conversion_for_comparison.py <入力フォルダパス> <出力フォルダパス>
+    python process_16to8_conversion_hist_v4_1.py <入力フォルダパス> <出力フォルダパス>
 """
 
 import glob
@@ -29,7 +29,7 @@ import matplotlib
 matplotlib.use('Agg')  # GUIなし環境用
 import matplotlib.pyplot as plt
 
-# --- Matplotlibのフォントサイズ設定 (ヒストグラム比較用) ---
+# --- Matplotlibのフォントサイズ設定 ---
 plt.rcParams.update({
     'font.size': 16,
     'axes.titlesize': 20,
@@ -38,15 +38,11 @@ plt.rcParams.update({
     'ytick.labelsize': 14,
     'legend.fontsize': 14,
 })
-
-# --- ユーザー設定パラメータ (クリッピング率) ---
-CLIP_LOW_PERCENT = 3.0
-CLIP_HIGH_PERCENT = 97.0
+Y_AXIS_MAX_PERCENT = 20.0
+# ---
 
 def convert_16bit_to_8bit_normalize(img_16bit: np.ndarray) -> np.ndarray:
-    """
-    方法1: 正規化 (NORM_MINMAX)
-    """
+    """方法1: 正規化 (NORM_MINMAX)"""
     img_8bit = cv.normalize(
         img_16bit, None, 0, 255, cv.NORM_MINMAX, dtype=cv.CV_8U
     )
@@ -54,12 +50,11 @@ def convert_16bit_to_8bit_normalize(img_16bit: np.ndarray) -> np.ndarray:
 
 def convert_16bit_to_8bit_clipped(
     img_16bit: np.ndarray,
-    low_percent: float,
-    high_percent: float
+    low_percent: float = 1.0,
+    high_percent: float = 99.0
 ) -> np.ndarray:
     """
     方法2: パーセンタイルベースのクリッピングを用いた正規化。
-    この関数は low_percent と high_percent を必須の引数として要求する。
     """
     vmin = np.percentile(img_16bit, low_percent)
     vmax = np.percentile(img_16bit, high_percent)
@@ -74,15 +69,6 @@ def convert_16bit_to_8bit_clipped(
     return img_8bit
 
 def get_gray_image(image_raw: np.ndarray) -> np.ndarray | None:
-    """
-    ヒストグラム計算用に、画像を8bitまたは16bitのグレースケールに変換する。
-    
-    Args:
-        image_raw: 入力画像 (カラーまたはグレー, uint8またはuint16)
-    
-    Returns:
-        グレースケール画像。サポート外のdtypeの場合はNone。
-    """
     if len(image_raw.shape) == 3 and image_raw.shape[2] >= 3:
         gray_image = cv.cvtColor(image_raw, cv.COLOR_BGR2GRAY)
     else:
@@ -94,19 +80,6 @@ def get_gray_image(image_raw: np.ndarray) -> np.ndarray | None:
     return gray_image
 
 def get_display_image_and_cmap(image_raw: np.ndarray) -> (np.ndarray, str | None):
-    """
-    Matplotlib (imshow) で表示するための画像とカラーマップを取得する。
-    
-    - 16bit画像は、上位8bitを抽出 (>> 8) して8bit画像に変換する。
-    - カラー画像はBGRからRGBに変換する。
-    - グレースケール画像の場合は cmap='gray' を返す。
-    
-    Args:
-        image_raw: 入力画像 (uint8またはuint16)
-    
-    Returns:
-        (表示用8bit画像, カラーマップ(strまたはNone))
-    """
     cmap = None
     if len(image_raw.shape) == 3 and image_raw.shape[2] >= 3:
         image_display = cv.cvtColor(image_raw, cv.COLOR_BGR2RGB)
@@ -121,16 +94,6 @@ def get_display_image_and_cmap(image_raw: np.ndarray) -> (np.ndarray, str | None
         return image_display, cmap
 
 def plot_single_hist_overlay(ax, gray_image: np.ndarray, label: str, color: str, alpha: float = 0.4):
-    """
-    指定されたMatplotlibのAxesに、単一のヒストグラムを割合(0.0-1.0)で重ね描きする。
-    
-    Args:
-        ax: 描画対象の Matplotlib Axes
-        gray_image: ヒストグラムを計算するグレースケール画像 (uint8またはuint16)
-        label: 凡例用のラベル
-        color: プロットの色
-        alpha: 透明度
-    """
     if gray_image.dtype == np.uint8:
         max_val_exclusive = 256
         bins = 256
@@ -140,7 +103,7 @@ def plot_single_hist_overlay(ax, gray_image: np.ndarray, label: str, color: str,
     else:
         return
 
-    weights = np.ones_like(gray_image.ravel()) / gray_image.size
+    weights = np.ones_like(gray_image.ravel()) / gray_image.size * 100
     
     ax.hist(
         gray_image.ravel(),
@@ -159,16 +122,13 @@ def plot_comparison_figure(
     img_clipped: np.ndarray,
     output_path: str,
     base_name: str,
-    low_percent: float,   # クリッピング率を引数で受け取る
-    high_percent: float  # クリッピング率を引数で受け取る
+    low_percent: float,
+    high_percent: float
 ):
     """
     3枚の画像と、3つのヒストグラム比較グラフを1枚の画像に出力する。
-    
-    - 左側に画像3枚 (Original, Normalize, Clipped) を表示。
-    - 右側にヒストグラム3種 (16bit, 8bit-Norm, 8bit-Clipped) を重ねて表示。
+    v4: 16bitヒストグラムにMin/Maxの垂直線を追加。
     """
-    # --- 1. ヒストグラム計算用のグレースケール画像を取得 ---
     gray_16bit = get_gray_image(img_16bit)
     gray_norm = get_gray_image(img_norm)
     gray_clipped = get_gray_image(img_clipped)
@@ -177,16 +137,19 @@ def plot_comparison_figure(
         print(f"[エラー] ヒストグラム生成のための画像取得に失敗: {base_name}")
         return
 
-    # --- 2. 表示用の8bit画像を取得 ---
+    vmin_norm = gray_16bit.min()
+    vmax_norm = gray_16bit.max()
+
+    vmin_clip = np.percentile(gray_16bit, low_percent)
+    vmax_clip = np.percentile(gray_16bit, high_percent)
+
     disp_16bit, cmap_16bit = get_display_image_and_cmap(img_16bit)
     disp_norm, cmap_norm = get_display_image_and_cmap(img_norm)
     disp_clipped, cmap_clipped = get_display_image_and_cmap(img_clipped)
 
-    # --- 3. プロットのレイアウト準備 (3行2列) ---
     fig = plt.figure(figsize=(18, 15))
     fig.suptitle(f"Image and Histogram Comparison\n({base_name})", fontsize=24)
 
-    # --- 3a. 左側: 画像表示 (3行1列目) ---
     ax_img1 = plt.subplot(3, 2, 1)
     ax_img1.set_title("Original (16bit)")
     ax_img1.imshow(disp_16bit, cmap=cmap_16bit)
@@ -202,42 +165,52 @@ def plot_comparison_figure(
     ax_img3.imshow(disp_clipped, cmap=cmap_clipped)
     ax_img3.axis('off')
 
-    # --- 3b. 右側: ヒストグラム表示 (3行分を結合) ---
     ax_hist1 = plt.subplot(3, 2, (2, 6))
     ax_hist2 = ax_hist1.twiny()
 
-    # --- Clipped の凡例 (label) を動的に生成 ---
     clipped_label = f"Clipped ({low_percent}%-{high_percent}%)"
     
-    # 8bitヒストグラムをプロット
     plot_single_hist_overlay(ax_hist1, gray_norm, "Normalize (8bit)", "blue")
     plot_single_hist_overlay(ax_hist1, gray_clipped, clipped_label, "red")
 
-    # 16bitヒストグラムをプロット
     plot_single_hist_overlay(ax_hist2, gray_16bit, "Original (16bit)", "black", alpha=0.7)
 
-    # 軸の設定
+    ylim_max = ax_hist1.get_ylim()[1]
+
+    ax_hist2.axvline(
+        x=vmin_norm, color='blue', linestyle='--', linewidth=2,
+        label=f'Norm Min ({vmin_norm})'
+    )
+    ax_hist2.axvline(
+        x=vmax_norm, color='blue', linestyle='--', linewidth=2,
+        label=f'Norm Max ({vmax_norm})'
+    )
+    
+    ax_hist2.axvline(
+        x=vmin_clip, color='red', linestyle=':', linewidth=2,
+        label=f'Clip Min ({vmin_clip:.0f})'
+    )
+    ax_hist2.axvline(
+        x=vmax_clip, color='red', linestyle=':', linewidth=2,
+        label=f'Clip Max ({vmax_clip:.0f})'
+    )
+
     ax_hist1.set_xlabel("Luminance (8bit: 0-255)", color="blue")
     ax_hist1.set_xlim(0, 256)
     ax_hist1.tick_params(axis='x', labelcolor="blue")
     ax_hist2.set_xlabel("Luminance (16bit: 0-65535)", color="black")
     ax_hist2.set_xlim(0, 65536)
     ax_hist2.tick_params(axis='x', labelcolor="black")
+    ax_hist1.set_ylabel("Percentage of Pixels (%)")
     
-    # Y軸ラベルを "Proportion" (割合) にする
-    ax_hist1.set_ylabel("Proportion of Pixels (0.0-1.0)")
+    ax_hist1.set_ylim(0, Y_AXIS_MAX_PERCENT if Y_AXIS_MAX_PERCENT is not None else ylim_max)
     
-    # Y軸の範囲を 0.0 から 1.0 に固定
-    ax_hist1.set_ylim(0, 1.0)
-    
-    # 凡例 (Legend) をまとめる
     lines1, labels1 = ax_hist1.get_legend_handles_labels()
     lines2, labels2 = ax_hist2.get_legend_handles_labels()
     ax_hist2.legend(lines1 + lines2, labels1 + labels2, loc='upper right')
 
     plt.tight_layout(rect=[0, 0.03, 1, 0.95])
 
-    # --- 4. プロットをファイルに保存 ---
     try:
         plt.savefig(output_path)
         print(f"  -> 比較グラフを保存: {output_path}")
@@ -255,18 +228,10 @@ def process_folder(input_dir: str, output_dir: str):
     if not os.path.isdir(input_dir):
         print(f"[ERROR] 入力フォルダが存在しません: {input_dir}")
         return
-    
-    # グローバル変数の設定値から、フォルダ名セーフな文字列を生成
-    low_str = str(CLIP_LOW_PERCENT).replace('.', 'p')
-    high_str = str(CLIP_HIGH_PERCENT).replace('.', 'p')
-    
-    # フォルダ名にクリッピング率を含める
-    clip_suffix = f"L{low_str}_H{high_str}"
-    
-    # 出力先のサブフォルダを作成
+
     output_normalize_dir = os.path.join(output_dir, "normalize")
-    output_clipped_dir = os.path.join(output_dir, f"normalize_clipped_{clip_suffix}")
-    output_hist_dir = os.path.join(output_dir, f"histogram_comparison_{clip_suffix}")
+    output_clipped_dir = os.path.join(output_dir, "normalize_clipped")
+    output_hist_dir = os.path.join(output_dir, "histogram_comparison") 
 
     os.makedirs(output_normalize_dir, exist_ok=True)
     os.makedirs(output_clipped_dir, exist_ok=True)
@@ -289,10 +254,10 @@ def process_folder(input_dir: str, output_dir: str):
         return
 
     print(f"[INFO] {len(image_files)} 件の画像を処理します...")
-    # 実行する設定値をログに出力
-    print(f"[INFO] クリッピング率: Low={CLIP_LOW_PERCENT}%, High={CLIP_HIGH_PERCENT}%")
-    print(f"[INFO] クリップ画像出力先: {output_clipped_dir}")
-    print(f"[INFO] グラフ出力先: {output_hist_dir}")
+
+    # --- 輝度値のクリッピング率 ---
+    clip_low_percent = 0.1
+    clip_high_percent = 99.9
     
     for file_path in image_files:
         base_name = os.path.basename(file_path)
@@ -300,7 +265,7 @@ def process_folder(input_dir: str, output_dir: str):
         output_filename = f"{name}.png"
 
         img_16bit = cv.imread(file_path, cv.IMREAD_UNCHANGED)
-        # (None チェック, dtype チェック ...)
+        
         if img_16bit is None:
             print(f"[WARNING] 読み込み失敗: {base_name}")
             continue
@@ -311,22 +276,18 @@ def process_folder(input_dir: str, output_dir: str):
         print(f"--- 処理中: {base_name} (16bit Min: {img_16bit.min()}, Max: {img_16bit.max()}) ---")
 
         try:
-            # 方法1: 正規化
             img_8bit_normalize = convert_16bit_to_8bit_normalize(img_16bit)
             save_path = os.path.join(output_normalize_dir, output_filename)
             cv.imwrite(save_path, img_8bit_normalize)
             print(f"  -> Normalize 保存完了")
             
-            # --- 変数を使用 ---
-            # 方法2: クリッピング正規化
             img_8bit_clipped = convert_16bit_to_8bit_clipped(
-                img_16bit, CLIP_LOW_PERCENT, CLIP_HIGH_PERCENT
+                img_16bit, clip_low_percent, clip_high_percent
             )
             save_path = os.path.join(output_clipped_dir, output_filename)
             cv.imwrite(save_path, img_8bit_clipped)
-            print(f"  -> Clipped ({CLIP_LOW_PERCENT}%-{CLIP_HIGH_PERCENT}%) 保存完了") # ログにも表示
+            print(f"  -> Clipped ({clip_low_percent}%-{clip_high_percent}%) 保存完了")
 
-            # --- ヒストグラム比較プロットの呼び出し ---
             hist_output_path = os.path.join(output_hist_dir, f"{name}_hist_comparison.png")
             plot_comparison_figure(
                 img_16bit,
@@ -334,8 +295,8 @@ def process_folder(input_dir: str, output_dir: str):
                 img_8bit_clipped,
                 hist_output_path,
                 base_name,
-                CLIP_LOW_PERCENT,  # グローバル変数を渡す
-                CLIP_HIGH_PERCENT  # グローバル変数を渡す
+                clip_low_percent,
+                clip_high_percent
             )
 
         except Exception as e:
@@ -346,9 +307,8 @@ def process_folder(input_dir: str, output_dir: str):
 
 if __name__ == "__main__":
     if len(sys.argv) != 3:
-        script_name = os.path.basename(sys.argv[0])
-        print(f"使用方法: python {script_name} <入力フォルダパス> <出力フォルダパス>")
-        print(f"例: python {script_name} ./my_16bit_images ./my_8bit_results")
+        print("使用方法: python process_16to8_conversion_hist_v4_1.py <入力フォルダパス> <出力フォルダパス>")
+        print("例: python process_16to8_conversion_hist_v4_1.py ./my_16bit_images ./my_8bit_results")
         sys.exit(1)
 
     input_folder = sys.argv[1]
